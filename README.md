@@ -58,9 +58,10 @@ flowchart TD
     F --> B
 
     C -- tool_use:\nlog_load_status --> G[logLoadStatus\nwrite to load store]
-    G --> H{statusLogged?}
-    H -- yes --> I([return CheckInResult])
-    H -- no --> J([throw ASSERT error])
+    G --> I([return CheckInResult])
+
+    B -- MAX_TURNS hit --> K[force-log incomplete\nflag_for_human + logLoadStatus]
+    K --> I
 ```
 
 ### Two Stores
@@ -88,7 +89,7 @@ The main agent (`claude-opus-4-8`) drives the full conversation and makes every 
 The system prompt defines a three-question protocol (location → ETA → any issues?) and instructs the agent to skip a question if the carrier already answered it unprompted. Three concrete escalation examples are embedded so the agent generalises to phrasings it hasn't seen before: "blew a tire," "knocking from the engine," "got rear-ended."
 
 **`log_load_status` always fires, always last**
-The loop code breaks the moment `log_load_status` is detected in a tool response — not by trusting `stop_reason === "end_turn"`. A post-loop assertion (`if (!statusLogged) throw`) catches any case where the tool was never called.
+The loop code breaks the moment `log_load_status` is detected in a tool response — not by trusting `stop_reason === "end_turn"`. If the loop exits without it (turn cap hit or unexpected break), the code force-logs an incomplete status and calls `flag_for_human` so a dispatcher knows to follow up. The load store always has a record; a check-in never silently disappears.
 
 **Flagged-state preservation**
 `logLoadStatus` reads the existing store entry before writing, so if `flag_for_human` was called earlier in the same call, the final record correctly shows `status: "needs_attention"`. The flag is never lost when the log is written.

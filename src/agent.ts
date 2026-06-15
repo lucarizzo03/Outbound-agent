@@ -242,18 +242,30 @@ export async function runCheckIn(
     }
   }
 
-  // Belt-and-suspenders assertion — this should never fire in normal operation
   if (!statusLogged) {
-    throw new Error(
-      `[ASSERT] Check-in for load ${load.id} ended after ${turnCount} turns ` +
-        `without calling log_load_status. Status was never logged.`
+    // Loop exited without log_load_status — hit turn cap or unexpected break.
+    // Force-log an incomplete record so the load store always has an entry
+    // and a dispatcher knows to follow up rather than the load silently disappearing.
+    const partial = getLoadStatus(load.id); // may have partial data from a prior flag_for_human
+    flagForHuman(
+      load.id,
+      `Check-in incomplete — loop exited after ${turnCount} turns without gathering all required information`
+    );
+    logLoadStatus(
+      load.id,
+      partial?.current_location ?? "Unknown",
+      partial?.eta ?? "Unknown",
+      `Check-in incomplete — exited after ${turnCount} turns. Manual follow-up required.`
+    );
+    console.warn(
+      `\n[WARN] Load ${load.id} — check-in did not complete within ${MAX_TURNS} turns. Force-logged and flagged for human.`
     );
   }
 
   const finalStatus = getLoadStatus(load.id);
   if (!finalStatus) {
     throw new Error(
-      `[ASSERT] log_load_status was called but store has no record for ${load.id}.`
+      `[ASSERT] store has no record for ${load.id} after log was written.`
     );
   }
 
