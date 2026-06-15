@@ -27,33 +27,23 @@ flowchart TD
 
     C -- end_turn --> D[getCarrierReply\nswappable stub / API]
     D --> E[validateCarrierReply\nthrows if empty or non-string]
-    E --> F[checkCarrierEscalation\nHaiku 4.5]
+    E --> B
 
-    F -- needsHuman: false --> H[append reply to messages]
-    F -- needsHuman: true --> G[flagForHuman\nwrite to store\ninject DISPATCH SYSTEM note]
-    G --> H
-    H --> B
+    C -- tool_use:\nflag_for_human --> F[flagForHuman\nwrite to store]
+    F --> B
 
-    C -- tool_use:\nflag_for_human --> I[flagForHuman\nwrite to store]
-    I --> B
-
-    C -- tool_use:\nlog_load_status --> J[logLoadStatus\nwrite to store]
-    J --> K{statusLogged?}
-    K -- yes --> M([return CheckInResult])
-    K -- no --> N([throw ASSERT error])
+    C -- tool_use:\nlog_load_status --> G[logLoadStatus\nwrite to store]
+    G --> H{statusLogged?}
+    H -- yes --> I([return CheckInResult])
+    H -- no --> J([throw ASSERT error])
 ```
 
 ### Key Design Decisions
 
-**Single LLM loop, not a chatbot + classifier**
-The main agent (`claude-opus-4-8`) drives the conversation, calls tools, and decides when to escalate. It is not a router. Escalation happens via the `flag_for_human` tool, not by dispatching to a separate model.
+**Single LLM loop — one model, no classifier**
+The main agent (`claude-opus-4-8`) drives the full conversation and makes every decision, including when to escalate. There is no separate classifier or pre-check model. Escalation happens when the agent calls the `flag_for_human` tool based on what it hears from the carrier.
 
-**Per-reply escalation pre-check**
-Before each carrier reply reaches the main agent, it is passed through a fast `claude-haiku-4-5` call that returns `{ needsHuman: boolean, reason: string }`. If `needsHuman` is true:
-- `flagForHuman()` is called directly on the store (the decision is made immediately)
-- A `[DISPATCH SYSTEM]` annotation is injected into the message so the main agent knows to wrap up
-
-The main agent may also call `flag_for_human` on its own for problems it detects independently. Both paths converge on the store — the result is idempotent.
+The system prompt teaches the agent to judge escalation by meaning, not keywords. Three concrete examples are embedded so the agent generalises to phrasings it hasn't seen before — "blew a tire," "loud knocking from the engine," "got into an accident" — rather than pattern-matching on a fixed word list.
 
 **`log_load_status` always fires, always last**
 The system prompt instructs the agent to call `log_load_status` at the end of every check-in. The loop code enforces this independently: it watches for the `log_load_status` tool call and breaks the loop the moment it fires. A post-loop assertion (`if (!statusLogged) throw`) catches any edge case where the tool was never called.
@@ -117,9 +107,8 @@ In-memory load status store. `logLoadStatus` preserves any prior `flagged` state
 ### `src/agent.ts`
 Contains:
 - `TOOLS` — Anthropic tool schema definitions for both tools
-- `buildSystemPrompt(load)` — constructs the per-call system prompt with load details injected
+- `buildSystemPrompt(load)` — constructs the per-call system prompt with load details and escalation examples injected
 - `validateCarrierReply(raw)` — runtime type guard; throws on non-string or empty reply
-- `checkCarrierEscalation(reply, loadId)` — `claude-haiku-4-5` call returning `{ needsHuman, reason }`
 - `runCheckIn(load, getCarrierReply)` — the main agent loop
 
 ### `scripts/test-checkin.ts`
@@ -160,8 +149,7 @@ npm run test:all
 
 | Role | Model | Why |
 |---|---|---|
-| Main agent | `claude-opus-4-8` | Drives the conversation, calls tools, makes nuanced decisions |
-| Escalation check | `claude-haiku-4-5` | Fast, cheap; runs on every carrier reply for a simple yes/no decision |
+| Main agent | `claude-opus-4-8` | Drives the full conversation — speaks to carrier, calls tools, detects and escalates problems |
 
 ---
 

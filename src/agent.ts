@@ -80,12 +80,19 @@ Your protocol:
 2. Gather the two required facts, asking ONE question at a time:
    - Current location of the truck
    - Estimated time of arrival (ETA) at the destination
-3. If the carrier reports a breakdown, accident, or major delay — or if you see a [DISPATCH SYSTEM] alert — call flag_for_human immediately, then wrap up professionally.
+3. If the carrier describes any situation that prevents or seriously threatens on-time delivery and that they cannot resolve on their own, call flag_for_human immediately.
 4. At the end of EVERY call — smooth or escalated — call log_load_status with the location, ETA, and notes.
+
+When to call flag_for_human:
+Judge by the meaning of what the carrier says, not specific words. Flag the load any time a competent dispatcher would want to know about it right away. Examples:
+- "I blew a tire and I'm stuck on the shoulder waiting for roadside" → breakdown, flag it
+- "There's a loud knocking from the engine — I'm not sure I should keep going" → mechanical risk, flag it
+- "I got into an accident about an hour ago, still dealing with it" → accident, flag it
 
 Rules:
 - Ask exactly one question per message. Never bundle multiple questions.
 - Be professional and concise. Keep messages short.
+- flag_for_human does NOT end the call. After flagging, finish gathering any facts you still need, then call log_load_status.
 - Call log_load_status exactly once, at the very end. It ends the check-in.`;
 }
 
@@ -104,59 +111,6 @@ function validateCarrierReply(raw: unknown): string {
     throw new Error("getCarrierReply returned an empty string");
   }
   return trimmed;
-}
-
-// ---------------------------------------------------------------------------
-// Per-reply LLM escalation check (runs on every carrier response)
-// ---------------------------------------------------------------------------
-
-interface EscalationCheck {
-  needsHuman: boolean;
-  reason: string;
-}
-
-async function checkCarrierEscalation(
-  carrierReply: string,
-  loadId: string
-): Promise<EscalationCheck> {
-  const response = await client.messages.create({
-    model: "claude-haiku-4-5",
-    max_tokens: 150,
-    system: `You analyze carrier responses in freight dispatch calls.
-Determine if the response indicates a problem requiring immediate human dispatcher attention.
-
-Flag as needsHuman: true if the carrier mentions:
-- Breakdown, mechanical failure, or vehicle won't start
-- Accident, collision, or injury
-- Major unexpected delay (2+ hours)
-- Safety hazard on the road
-- Cargo damage or loss
-
-Respond with valid JSON only — no other text:
-{"needsHuman": boolean, "reason": string}
-If needsHuman is false, set reason to "".`,
-    messages: [
-      {
-        role: "user",
-        content: `Load ${loadId} carrier response: "${carrierReply}"`,
-      },
-    ],
-  });
-
-  const text =
-    response.content.find((b): b is Anthropic.TextBlock => b.type === "text")
-      ?.text ?? "";
-
-  try {
-    const parsed = JSON.parse(text) as Partial<EscalationCheck>;
-    return {
-      needsHuman: Boolean(parsed.needsHuman),
-      reason: String(parsed.reason ?? ""),
-    };
-  } catch {
-    console.warn(`  [Escalation check] Could not parse response: ${text}`);
-    return { needsHuman: false, reason: "" };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,37 +229,12 @@ export async function runCheckIn(
 
       console.log(`\n[Agent → Carrier] ${agentMessage}`);
 
-      // Get carrier reply and validate (type-safety guard)
+      // Get carrier reply, validate (type-safety guard), pass straight to agent
       const rawReply = await getCarrierReply(agentMessage);
       const carrierReply = validateCarrierReply(rawReply);
 
-      // Per-reply LLM escalation check — runs on every carrier response
-      console.log(`  [Escalation check running...]`);
-      const escalation = await checkCarrierEscalation(carrierReply, load.id);
-      console.log(
-        `  [Escalation check] needsHuman: ${escalation.needsHuman}` +
-          (escalation.needsHuman ? ` | reason: ${escalation.reason}` : "")
-      );
-
-      let messageForAgent: string;
-
-      if (escalation.needsHuman) {
-        // The escalation check made the decision — flag the store now
-        flagForHuman(load.id, escalation.reason);
-        console.log(
-          `  [Pre-check escalation] Load ${load.id} flagged by dispatch monitor.`
-        );
-        // Signal the main agent so it wraps up correctly
-        messageForAgent =
-          `${carrierReply}\n\n[DISPATCH SYSTEM: Automated monitor has flagged this load for human attention. ` +
-          `Reason: ${escalation.reason}. Human dispatcher has been alerted. ` +
-          `Please acknowledge the situation and call log_load_status to close the record.]`;
-      } else {
-        messageForAgent = carrierReply;
-      }
-
       console.log(`[Carrier → Agent] ${carrierReply}`);
-      messages.push({ role: "user", content: messageForAgent });
+      messages.push({ role: "user", content: carrierReply });
     } else {
       console.log(`[Unexpected stop_reason: ${response.stop_reason}]`);
       break;
