@@ -1,6 +1,6 @@
 # Outbound Carrier Check-In Agent
 
-A demo AI agent for HappyRobot that autonomously conducts outbound carrier check-in calls. The agent gathers location and ETA from carriers, runs an escalation check on every reply, flags problems for human dispatchers, and always closes by logging the final load status.
+A demo AI agent for HappyRobot that autonomously conducts outbound carrier check-in calls. The agent gathers location and ETA from carriers, judges whether the carrier's reply indicates a problem, flags issues for human dispatchers, and always closes by logging the final load status.
 
 ---
 
@@ -11,8 +11,8 @@ When a load is in transit, a dispatcher normally calls each carrier to confirm t
 1. Opens the conversation identifying itself, the company, and the load
 2. Asks for the carrier's current location (one question at a time)
 3. Asks for the ETA
-4. On every carrier reply, runs a fast LLM escalation check to detect breakdowns, accidents, or major delays
-5. If the escalation check fires, flags the load for a human dispatcher immediately
+4. Judges whether the carrier's reply indicates a breakdown, accident, or major delay
+5. If it does, calls `flag_for_human` to alert a dispatcher immediately
 6. Always ends the call by logging the final status — no exceptions
 
 ---
@@ -91,7 +91,7 @@ outbound-agent/
 │   ├── types.ts       — Load, LoadStatus, GetCarrierReply, CheckInResult
 │   ├── store.ts       — In-memory Map; logLoadStatus(), flagForHuman()
 │   ├── mockData.ts    — 5 mock loads (LOAD-001 → LOAD-005)
-│   └── agent.ts       — Tools, system prompt, escalation check, main loop
+│   └── agent.ts       — Tools, system prompt, main loop (escalation via tool call)
 ├── scripts/
 │   └── test-checkin.ts — Terminal test runner with clean + escalation stubs
 ├── package.json
@@ -102,7 +102,7 @@ outbound-agent/
 Shared interfaces used across all modules.
 
 ### `src/store.ts`
-In-memory load status store. `logLoadStatus` preserves any prior `flagged` state set by `flagForHuman`, so if the pre-check escalation fires before the main agent calls `log_load_status`, the final record correctly shows `status: "needs_attention"`.
+In-memory load status store. `logLoadStatus` preserves any prior `flagged` state set by `flagForHuman`, so if the agent calls `flag_for_human` before `log_load_status`, the final record correctly shows `status: "needs_attention"`.
 
 ### `src/agent.ts`
 Contains:
@@ -136,7 +136,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 npm run test:clean
 
 # Escalation path — LOAD-005, Southeastern Trucking, Atlanta → Charlotte
-# Carrier reports a blown tire; escalation check fires on first reply
+# Carrier reports a blown tire; agent escalates on first reply
 npm run test:escalation
 
 # Run both back-to-back and print combined store state
@@ -157,6 +157,6 @@ npm run test:all
 
 | Stage | Status | Description |
 |---|---|---|
-| 1 | ✅ Complete | Terminal agent module — tools, loop, escalation check, test stubs |
+| 1 | ✅ Complete | Terminal agent module — tools, loop, escalation via tool call, test stubs |
 | 2 | Pending | Express API wrapper exposing `POST /check-in` and `GET /loads` |
 | 3 | Pending | React + Vite frontend — live load board, check-in trigger, status display |
