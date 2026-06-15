@@ -19,37 +19,28 @@ When a load is in transit, a dispatcher normally calls each carrier to confirm t
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        runCheckIn(load, getCarrierReply)         │
-│                                                                   │
-│   ┌──────────────┐    agent speaks    ┌────────────────────────┐ │
-│   │              │ ──────────────────▶│   getCarrierReply()    │ │
-│   │  Main Agent  │                    │  (swappable stub / API)│ │
-│   │ claude-opus  │ ◀──────────────────│                        │ │
-│   │    -4-8      │   carrier reply    └────────────────────────┘ │
-│   │              │                              │                 │
-│   │  Tools:      │              validateCarrierReply()           │
-│   │  • log_load_ │              (type guard — throws if empty)   │
-│   │    status    │                              │                 │
-│   │  • flag_for_ │              checkCarrierEscalation()        │
-│   │    human     │              claude-haiku-4-5                 │
-│   │              │              → { needsHuman, reason }        │
-│   └──────┬───────┘                              │                │
-│          │                        if needsHuman:│                │
-│          │                        flagForHuman()│                │
-│          │                        + inject      │                │
-│          │                        [DISPATCH     │                │
-│          │                         SYSTEM] note │                │
-│          │                                      │                │
-│          │◀─────────────────────────────────────┘               │
-│          │                                                        │
-│          │  tool_use: flag_for_human  →  flagForHuman() in store │
-│          │  tool_use: log_load_status →  logLoadStatus() in store│
-│          │                              LOOP ENDS HERE           │
-│          ▼                                                        │
-│   [ASSERT: statusLogged === true]                                │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A([runCheckIn]) --> B[Main Agent\nOpus 4.8]
+
+    B --> C{stop_reason?}
+
+    C -- end_turn --> D[getCarrierReply\nswappable stub / API]
+    D --> E[validateCarrierReply\nthrows if empty or non-string]
+    E --> F[checkCarrierEscalation\nHaiku 4.5]
+
+    F -- needsHuman: false --> H[append reply to messages]
+    F -- needsHuman: true --> G[flagForHuman\nwrite to store\ninject DISPATCH SYSTEM note]
+    G --> H
+    H --> B
+
+    C -- tool_use:\nflag_for_human --> I[flagForHuman\nwrite to store]
+    I --> B
+
+    C -- tool_use:\nlog_load_status --> J[logLoadStatus\nwrite to store]
+    J --> K{statusLogged?}
+    K -- yes --> M([return CheckInResult])
+    K -- no --> N([throw ASSERT error])
 ```
 
 ### Key Design Decisions
