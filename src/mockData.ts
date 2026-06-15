@@ -4,8 +4,8 @@ export const MOCK_LOADS: Load[] = [
   {
     id: "LOAD-001",
     origin: "Chicago, IL",
-    destination: "Nashville, TN",
-    carrier_name: "Swift Transport",
+    destination: "Dallas, TX",
+    carrier_name: "Smith Trucking",
   },
   {
     id: "LOAD-002",
