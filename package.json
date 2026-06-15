@@ -1,0 +1,18 @@
+{
+  "name": "outbound-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:clean": "tsx scripts/test-checkin.ts clean",
+    "test:escalation": "tsx scripts/test-checkin.ts escalation",
+    "test:all": "tsx scripts/test-checkin.ts all"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.55.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
