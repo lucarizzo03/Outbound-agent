@@ -69,39 +69,6 @@ All load statuses are stored in a `Map<string, LoadStatus>` in memory. Sufficien
 
 ---
 
-## Loop Flow (step by step)
-
-```
-messages = [{ role: "user", content: "Begin the check-in call now." }]
-
-while (!statusLogged && turnCount < MAX_TURNS):
-
-  response = client.messages.create(model, system, tools, messages)
-  messages.push({ role: "assistant", content: response.content })
-
-  if stop_reason === "tool_use":
-    for each tool_use block:
-      if flag_for_human  → flagForHuman(store), append tool_result
-      if log_load_status → logLoadStatus(store), statusLogged = true, append tool_result
-    messages.push({ role: "user", content: toolResults })
-    if statusLogged → BREAK
-
-  if stop_reason === "end_turn":
-    agentMessage = extract text from response
-    rawReply     = await getCarrierReply(agentMessage)
-    carrierReply = validateCarrierReply(rawReply)        ← type guard
-    escalation   = await checkCarrierEscalation(reply)   ← haiku LLM call
-    if escalation.needsHuman:
-      flagForHuman(store)
-      messageForAgent = carrierReply + [DISPATCH SYSTEM] note
-    else:
-      messageForAgent = carrierReply
-    messages.push({ role: "user", content: messageForAgent })
-
-assert statusLogged === true   ← belt-and-suspenders
-return CheckInResult
-```
-
 ---
 
 ## Tools
