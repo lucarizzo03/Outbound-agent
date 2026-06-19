@@ -344,11 +344,19 @@ npm run test:all          # both back-to-back + final store state
 
 ---
 
-## Stage Roadmap
+## Production Readiness
 
-| Stage | Status | Description |
-|---|---|---|
-| 1 | ✅ Complete | Terminal agent module — tools, loop, escalation via tool call, carrier stubs |
-| 2 | ✅ Complete | Express API — `POST /run`, `GET /run/:id`, `GET /loads`, `GET /loads/:id` |
-| 3 | ✅ Complete | React + Vite dashboard — live load board, turn-by-turn conversation reveal, escalation sync |
-| 4 | ✅ Complete | Langfuse tracing — OTel auto-instrumentation, per-run and per-load spans |
+This is a demonstration of agent design, not a deployable system. The hard parts of a production voice agent are intentionally stubbed behind clean interfaces:
+
+**Telephony / voice** — `getCarrierReply` is a swappable interface; production drops in Twilio or Vonage for the call, Deepgram for STT, ElevenLabs or Cartesia for TTS. The agent loop is unchanged. Turn-taking, interruption handling, and latency are the real engineering work.
+
+**Persistence** — all three stores are in-memory; production needs a database. The store interfaces are isolated so this is a swap, not a rewrite.
+
+**Retry & failure handling** — no-answer, voicemail, and busy detection are unhandled. Production needs backoff, retry scheduling, and a dead-letter path for repeated failures.
+
+**Compliance** — no TCPA call-window enforcement, recording-consent disclosure, DNC scrubbing, or PII handling.
+
+**Concurrency** — sequential by design for the demo; production would use bounded parallelism capped by telephony provider and API rate limits.
+
+**Auth & multi-tenancy** — `POST /run` is unauthenticated and operates on a single shared load set. Production needs API key or JWT auth, per-tenant load isolation, and role-based access for dispatchers.
+
