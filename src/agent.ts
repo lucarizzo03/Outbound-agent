@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Load, GetCarrierReply, CheckInResult } from "./types.js";
 import { logLoadStatus, flagForHuman, getLoadStatus } from "./store.js";
+import { addTurn } from "./transcriptStore.js";
 
 const client = new Anthropic();
 
@@ -68,7 +69,7 @@ const TOOLS: Anthropic.Tool[] = [
 // ---------------------------------------------------------------------------
 
 function buildSystemPrompt(load: Load): string {
-  return `You are an outbound carrier check-in agent for a freight logistics company called HappyRobot.
+  return `You are an outbound carrier check-in agent for a freight logistics company.
 
 You are conducting a check-in call for this specific load:
 - Load ID: ${load.id}
@@ -76,7 +77,7 @@ You are conducting a check-in call for this specific load:
 - Carrier: ${load.carrier_name}
 
 Your protocol — ask ONE question at a time, in this order:
-1. Open with a short, friendly greeting. Identify yourself, HappyRobot, and the load ID. Ask for a quick status update.
+1. Open with a short, friendly greeting. Identify yourself as an Outbound Agent and include the load ID. Ask for a quick status update.
 2. Ask for their current location.
 3. Ask for their ETA into ${load.destination}.
 4. Ask if there's anything slowing them down or any issues to flag.
@@ -167,6 +168,7 @@ export async function runCheckIn(
         if (toolUse.name === "flag_for_human") {
           const input = toolUse.input as { load_id: string; reason: string };
           flagForHuman(input.load_id, input.reason);
+          addTurn(input.load_id, "tool", input.reason, "flag_for_human");
 
           console.log(`\n[TOOL: flag_for_human]`);
           console.log(`  load_id : ${input.load_id}`);
@@ -192,6 +194,7 @@ export async function runCheckIn(
             input.eta,
             input.notes
           );
+          addTurn(input.load_id, "tool", "Status logged.", "log_load_status");
           statusLogged = true;
 
           console.log(`\n[TOOL: log_load_status]`);
@@ -229,12 +232,14 @@ export async function runCheckIn(
       }
 
       console.log(`\n[Agent → Carrier] ${agentMessage}`);
+      addTurn(load.id, "agent", agentMessage);
 
       // Get carrier reply, validate (type-safety guard), pass straight to agent
       const rawReply = await getCarrierReply(agentMessage);
       const carrierReply = validateCarrierReply(rawReply);
 
       console.log(`[Carrier → Agent] ${carrierReply}`);
+      addTurn(load.id, "carrier", carrierReply);
       messages.push({ role: "user", content: carrierReply });
     } else {
       console.log(`[Unexpected stop_reason: ${response.stop_reason}]`);

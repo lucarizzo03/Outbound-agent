@@ -1,6 +1,8 @@
 # Outbound Carrier Check-In Agent
 
-A demo AI agent for HappyRobot that autonomously conducts outbound carrier check-in calls. A single API call kicks off a sequential run across all active loads — the agent calls each carrier, gathers location and ETA, escalates problems to human dispatchers, and always closes by logging the final load status.
+An AI agent that autonomously conducts outbound carrier check-in calls. A single API call kicks off a sequential run across all active loads — the agent calls each carrier, gathers location and ETA, escalates problems to human dispatchers, and always closes by logging the final load status. A live dispatcher dashboard streams each conversation turn by turn as it happens.
+
+![Outbound Agent dispatcher dashboard](assets/dashboard.png)
 
 ---
 
@@ -13,7 +15,7 @@ When loads are in transit, a dispatcher normally calls each carrier to confirm l
 3. If at any point the carrier's reply indicates a breakdown, accident, or major delay, the agent calls `flag_for_human` immediately to alert a dispatcher
 4. Every call ends with `log_load_status` — no exceptions, whether the call was clean or escalated
 5. The client polls `GET /run/:runId` to track progress as each load is checked in
-6. `GET /loads` returns the final logged status for all loads once the run completes
+6. A React dashboard streams each conversation live, reveals turns one at a time with typing indicators, and flips the board row red the moment a flag event is revealed
 
 ---
 
@@ -39,7 +41,7 @@ flowchart TD
 
     L([GET /run/:runId]) --> M[runs store\nper-load progress]
     N([GET /loads]) --> O[load store\nfinal logged statuses]
-    P([GET /loads/:id]) --> O
+    P([GET /loads/:id/transcript]) --> Q[transcript store\nturn-by-turn conversation]
 ```
 
 ### Agent Level — inside each `runCheckIn`
@@ -54,31 +56,32 @@ flowchart TD
     D --> E[validateCarrierReply\nthrows if empty or non-string]
     E --> B
 
-    C -- tool_use:\nflag_for_human --> F[flagForHuman\nwrite to load store]
+    C -- tool_use:\nflag_for_human --> F[flagForHuman\nwrite to load store + transcript]
     F --> B
 
-    C -- tool_use:\nlog_load_status --> G[logLoadStatus\nwrite to load store]
+    C -- tool_use:\nlog_load_status --> G[logLoadStatus\nwrite to load store + transcript]
     G --> I([return CheckInResult])
 
     B -- MAX_TURNS hit --> K[force-log incomplete\nflag_for_human + logLoadStatus]
     K --> I
 ```
 
-### Two Stores
+### Three Stores
 
 | Store | Where | What it tracks |
 |---|---|---|
 | Run store (`runs.ts`) | `Map<runId, Run>` | Real-time job progress — which loads are pending, in_progress, completed, or failed |
 | Load store (`store.ts`) | `Map<loadId, LoadStatus>` | Final dispatched record — written by `log_load_status` at the end of each check-in |
+| Transcript store (`transcriptStore.ts`) | `Map<loadId, Turn[]>` | Turn-by-turn conversation log — written as the agent loop runs, polled by the dashboard |
 
-These are intentionally separate. The run store is ephemeral job state. The load store is the permanent record of what was logged.
+The run and transcript stores are ephemeral job state. The load store is the permanent record of what was logged.
 
 ---
 
 ## Key Design Decisions
 
 **Async job pattern**
-`POST /run` returns a `run_id` immediately (`202 Accepted`) and processes loads in the background. The client polls `GET /run/:runId` until `status` is no longer `"in_progress"`. This keeps the HTTP layer non-blocking and sets up Stage 3 for live progress display.
+`POST /run` returns a `run_id` immediately (`202 Accepted`) and processes loads in the background. The client polls `GET /run/:runId` until `status` is no longer `"in_progress"`. This keeps the HTTP layer non-blocking.
 
 **Sequential processing — one load at a time**
 `executeRun` iterates through loads one by one. Each load is set to `"in_progress"`, `runCheckIn` is awaited, then it moves to the next. Simpler to debug, easier to read in logs, and avoids parallel API call overhead for a demo.
@@ -94,8 +97,14 @@ The loop code breaks the moment `log_load_status` is detected in a tool response
 **Flagged-state preservation**
 `logLoadStatus` reads the existing store entry before writing, so if `flag_for_human` was called earlier in the same call, the final record correctly shows `status: "needs_attention"`. The flag is never lost when the log is written.
 
+**Synchronized escalation flip**
+The dashboard drives the board row's red state from when the `flag_for_human` turn is *revealed* in the conversation, not from the raw backend status. This keeps the board and conversation panel in lockstep — the row flips red exactly when the flag event lands on screen.
+
 **Swappable carrier reply source**
 `runCheckIn` takes `getCarrierReply: (agentMessage: string) => Promise<string>` as a parameter. Currently this is a hardcoded stub. Replacing it with a telephony/STT integration requires no changes to the agent loop.
+
+**Langfuse tracing**
+Every run is traced end-to-end via OpenTelemetry. The Anthropic SDK is auto-instrumented so each `messages.create()` call is captured as a generation span. Manual `startActiveObservation` spans wrap the run and each per-load check-in, giving a full nested trace: `carrier-run → check-in → generation (turn 1, 2, 3...)`.
 
 ---
 
@@ -152,6 +161,11 @@ Returns all load statuses currently in the store. Empty array until at least one
 
 ---
 
+### `GET /loads/meta`
+Returns static load metadata for all loads (id, origin, destination, carrier_name). Used by the dashboard to populate the board before any check-ins complete.
+
+---
+
 ### `GET /loads/:id`
 Returns the status for a single load.
 
@@ -170,6 +184,23 @@ Returns the status for a single load.
 ```
 
 **Response `404`** — load not yet checked in or does not exist
+
+---
+
+### `GET /loads/:id/transcript`
+Returns the conversation transcript for a load, built turn-by-turn as the agent loop runs.
+
+**Response `200`**
+```json
+[
+  { "id": 0, "role": "agent",   "content": "Hi, this is the Outbound Agent calling..." },
+  { "id": 1, "role": "carrier", "content": "Yeah we're rolling, just passed Waco" },
+  { "id": 2, "role": "tool",    "content": "Status logged.", "toolName": "log_load_status" }
+]
+```
+
+`role` values: `"agent"` | `"carrier"` | `"tool"`
+`toolName` values: `"flag_for_human"` | `"log_load_status"` (present when `role` is `"tool"`)
 
 ---
 
@@ -200,88 +231,85 @@ Flags a load for immediate dispatcher attention. Called before `log_load_status`
 ```
 outbound-agent/
 ├── src/
-│   ├── types.ts       — Load, LoadStatus, GetCarrierReply, CheckInResult
-│   ├── store.ts       — Load store; logLoadStatus(), flagForHuman(), getAllStatuses()
-│   ├── mockData.ts    — 5 mock loads (LOAD-001 → LOAD-005)
-│   ├── stubs.ts       — Carrier reply stubs; per-route responses; stubForLoad(load)
-│   ├── agent.ts       — Tools, system prompt, main agent loop
-│   ├── runs.ts        — Run store; createRun(), executeRun() sequential loop
-│   └── server.ts      — Express app; POST /run, GET /run/:id, GET /loads, GET /loads/:id
+│   ├── types.ts             — Load, LoadStatus, GetCarrierReply, CheckInResult
+│   ├── store.ts             — Load store; logLoadStatus(), flagForHuman(), getAllStatuses()
+│   ├── transcriptStore.ts   — Transcript store; addTurn(), getTranscript()
+│   ├── mockData.ts          — 5 mock loads (LOAD-001 → LOAD-005)
+│   ├── stubs.ts             — Carrier reply stubs; per-route responses; stubForLoad(load)
+│   ├── agent.ts             — Tools, system prompt, main agent loop
+│   ├── runs.ts              — Run store; createRun(), executeRun() sequential loop
+│   ├── instrumentation.ts   — OpenTelemetry + Langfuse setup; Anthropic auto-instrumentation
+│   └── server.ts            — Express app; all API endpoints
+├── client/
+│   ├── src/
+│   │   ├── App.tsx          — Two-panel dispatcher dashboard; all polling + reveal logic
+│   │   └── index.css        — Animations (bubble-in, typing dots, escalation pulse)
+│   ├── index.html
+│   └── vite.config.ts       — Proxies /api → localhost:3000
 ├── scripts/
-│   └── test-checkin.ts — Stage 1 terminal test runner
-├── .env               — ANTHROPIC_API_KEY (git-ignored)
-├── .env.example       — key template for new contributors
-├── .gitignore
+│   └── test-checkin.ts      — Terminal test runner (bypasses API layer)
+├── .env                     — API keys (git-ignored)
+├── .env.example             — Key template
 ├── package.json
 └── tsconfig.json
 ```
-
-### `src/types.ts`
-Shared interfaces: `Load`, `LoadStatus`, `GetCarrierReply`, `CheckInResult`.
-
-### `src/store.ts`
-Permanent load status store. `logLoadStatus` preserves any prior `flagged` state — if the agent calls `flag_for_human` before `log_load_status`, the final record correctly shows `status: "needs_attention"`.
-
-### `src/stubs.ts`
-Carrier reply stubs used during development. Both `makeCleanStub(load)` and `makeEscalationStub(load)` take a `Load` and return a turn-counter function that produces the next pre-written carrier line each time the agent speaks. Clean responses are route-aware — each load ID maps to geographically appropriate replies (e.g. LOAD-001 Chicago→Dallas says "just passed Waco"). `stubForLoad(load)` auto-selects: LOAD-005 → escalation, all others → clean. Will be replaced by telephony/STT in production.
-
-### `src/agent.ts`
-The check-in agent. Contains tool definitions, system prompt builder, `validateCarrierReply` type guard, and `runCheckIn` — the manual Anthropic API tool-use loop.
-
-### `src/runs.ts`
-Job store and execution engine. `createRun()` initialises a run with all loads as `"pending"`. `executeRun()` iterates sequentially, calling `runCheckIn` for each load and updating progress status. The run's final `status` is `"failed"` if any load failed, otherwise `"completed"`.
-
-### `src/server.ts`
-Express API server. CORS enabled for Stage 3. `POST /run` fires `executeRun` in the background and returns immediately; the load-level `.catch` inside `executeRun` prevents one failed load from crashing the whole run.
-
-### `scripts/test-checkin.ts`
-Stage 1 terminal test — runs individual check-ins directly without the API layer. Imports stubs from `src/stubs.ts`.
 
 ---
 
 ## Setup
 
-**Prerequisites:** Node.js 18+, an Anthropic API key.
+**Prerequisites:** Node.js 18+, an Anthropic API key, optionally Langfuse keys for tracing.
 
 ```bash
+# Backend
 npm install
 cp .env.example .env
-# then open .env and add your key:
+# Fill in .env:
 # ANTHROPIC_API_KEY=sk-ant-...
+# LANGFUSE_SECRET_KEY=sk-lf-...   (optional)
+# LANGFUSE_PUBLIC_KEY=pk-lf-...   (optional)
+# LANGFUSE_BASE_URL=https://cloud.langfuse.com
+
+# Frontend
+cd client && npm install
 ```
 
 ---
 
 ## Running
 
-### API server (Stage 2)
+### Full stack (API + dashboard)
+
 ```bash
+# Terminal 1 — backend API
 npm start
-# → HappyRobot check-in API → http://localhost:3000
+# → Outbound Agent API → http://localhost:3000
 
-# Start a run
-curl -X POST http://localhost:3000/run
-
-# Poll progress
-curl http://localhost:3000/run/<run_id>
-
-# See all load statuses
-curl http://localhost:3000/loads
-
-# Single load
-curl http://localhost:3000/loads/LOAD-005
+# Terminal 2 — frontend dashboard
+cd client && npm run dev
+# → http://localhost:5173
 ```
 
-### Terminal test (Stage 1)
+Open `http://localhost:5173`, click **Start Check-In Run**, and watch the board come alive.
+
+### API only (curl)
+
 ```bash
-# Single clean check-in — LOAD-001, Smith Trucking, Chicago → Dallas
-npm run test:clean
+npm start
 
-# Escalation path — LOAD-005, Southeastern Trucking, Atlanta → Charlotte
-npm run test:escalation
+curl -X POST http://localhost:3000/run
+curl http://localhost:3000/run/<run_id>
+curl http://localhost:3000/loads
+curl http://localhost:3000/loads/LOAD-005
+curl http://localhost:3000/loads/LOAD-001/transcript
+```
 
-# Run both and print combined store state
-npm run test:all
+### Terminal test (no API layer)
+
+```bash
+npm run test:clean        # LOAD-001, Smith Trucking, Chicago → Dallas
+npm run test:escalation   # LOAD-005, Southeastern Trucking, Atlanta → Charlotte (breakdown)
+npm run test:all          # both back-to-back + final store state
 ```
 
 ---
@@ -294,12 +322,25 @@ npm run test:all
 
 ## Dependencies
 
+### Backend
+
 | Package | Purpose |
 |---|---|
 | `@anthropic-ai/sdk` | Anthropic API client — messages, tool use |
 | `express` | HTTP server |
-| `cors` | Cross-origin headers for Stage 3 frontend |
-| `dotenv` | Loads `ANTHROPIC_API_KEY` from `.env` |
+| `cors` | Cross-origin headers for the frontend |
+| `dotenv` | Loads env vars from `.env` |
+| `@langfuse/otel` | Langfuse OpenTelemetry span processor |
+| `@langfuse/tracing` | Manual trace/span creation (`startActiveObservation`) |
+| `@opentelemetry/sdk-node` | OpenTelemetry Node.js SDK |
+| `@arizeai/openinference-instrumentation-anthropic` | Auto-instruments Anthropic SDK calls |
+
+### Frontend
+
+| Package | Purpose |
+|---|---|
+| `react` / `react-dom` | UI framework |
+| `vite` + `@vitejs/plugin-react` | Dev server and bundler |
 
 ---
 
@@ -309,4 +350,5 @@ npm run test:all
 |---|---|---|
 | 1 | ✅ Complete | Terminal agent module — tools, loop, escalation via tool call, carrier stubs |
 | 2 | ✅ Complete | Express API — `POST /run`, `GET /run/:id`, `GET /loads`, `GET /loads/:id` |
-| 3 | Pending | React + Vite frontend — live load board, run trigger, real-time progress display |
+| 3 | ✅ Complete | React + Vite dashboard — live load board, turn-by-turn conversation reveal, escalation sync |
+| 4 | ✅ Complete | Langfuse tracing — OTel auto-instrumentation, per-run and per-load spans |

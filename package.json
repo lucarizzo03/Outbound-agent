@@ -2,6 +2,7 @@
   "name": "outbound-agent",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "start": "tsx src/server.ts",
     "test:clean": "tsx scripts/test-checkin.ts clean",
@@ -10,6 +11,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.55.0",
+    "@arizeai/openinference-instrumentation-anthropic": "^0.1.13",
+    "@langfuse/otel": "^5.5.3",
+    "@langfuse/tracing": "^5.5.3",
+    "@opentelemetry/sdk-node": "^0.219.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.21.0"

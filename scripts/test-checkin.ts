@@ -7,7 +7,8 @@
  *   npm run test:all          # run both back-to-back
  */
 
-import "dotenv/config";
+import "../src/instrumentation.js";
+import { sdk } from "../src/instrumentation.js";
 import { runCheckIn } from "../src/agent.js";
 import { getAllStatuses } from "../src/store.js";
 import { MOCK_LOADS } from "../src/mockData.js";
@@ -61,7 +62,9 @@ async function main(): Promise<void> {
   printSummary();
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  })
+  .finally(() => sdk.shutdown());

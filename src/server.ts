@@ -1,8 +1,11 @@
-import "dotenv/config";
+import "./instrumentation.js";
 import express from "express";
 import cors from "cors";
+import { sdk } from "./instrumentation.js";
 import { createRun, executeRun, getRun } from "./runs.js";
 import { getAllStatuses, getLoadStatus } from "./store.js";
+import { getTranscript } from "./transcriptStore.js";
+import { MOCK_LOADS } from "./mockData.js";
 
 const app = express();
 app.use(cors());
@@ -66,6 +69,23 @@ app.get("/loads", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /loads/meta
+// Returns static load metadata (id, origin, destination, carrier_name).
+// Must be registered before /loads/:id to avoid the :id wildcard catching it.
+// ---------------------------------------------------------------------------
+app.get("/loads/meta", (_req, res) => {
+  res.json(MOCK_LOADS);
+});
+
+// ---------------------------------------------------------------------------
+// GET /loads/:id/transcript
+// Returns the conversation transcript for a load, built turn-by-turn.
+// ---------------------------------------------------------------------------
+app.get("/loads/:id/transcript", (req, res) => {
+  res.json(getTranscript(req.params.id));
+});
+
+// ---------------------------------------------------------------------------
 // GET /loads/:id
 // Returns the status for a single load, or 404 if not yet checked in.
 // ---------------------------------------------------------------------------
@@ -83,11 +103,14 @@ app.get("/loads/:id", (req, res) => {
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT ?? 3000;
 app.listen(PORT, () => {
-  console.log(`HappyRobot check-in API → http://localhost:${PORT}`);
+  console.log(`Outbound Agent API → http://localhost:${PORT}`);
   console.log(`  POST /run           start a check-in run`);
   console.log(`  GET  /run/:runId    poll run status`);
   console.log(`  GET  /loads         all load statuses`);
   console.log(`  GET  /loads/:id     single load status`);
 });
+
+process.on("SIGTERM", () => sdk.shutdown().finally(() => process.exit(0)));
+process.on("SIGINT",  () => sdk.shutdown().finally(() => process.exit(0)));
 
 export default app;
